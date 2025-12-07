@@ -291,6 +291,90 @@
         transform: translateX(0);
       }
     }
+
+    .call-control-panel {
+      background: white;
+      border-radius: 12px;
+      padding: 24px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+      margin-bottom: 20px;
+    }
+
+    .call-input-group {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+
+    .call-input {
+      flex: 1;
+      padding: 12px 16px;
+      font-size: 1.1rem;
+      border: 2px solid #e5e7eb;
+      border-radius: 8px;
+      outline: none;
+      transition: border-color 0.3s;
+    }
+
+    .call-input:focus {
+      border-color: #667eea;
+    }
+
+    .call-button {
+      padding: 12px 32px;
+      font-size: 1.1rem;
+      font-weight: 600;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.3s;
+      color: white;
+    }
+
+    .call-button.start {
+      background: #10b981;
+    }
+
+    .call-button.start:hover {
+      background: #059669;
+    }
+
+    .call-button.end {
+      background: #ef4444;
+    }
+
+    .call-button.end:hover {
+      background: #dc2626;
+    }
+
+    .call-button:disabled {
+      background: #9ca3af;
+      cursor: not-allowed;
+    }
+
+    .call-status {
+      padding: 12px;
+      border-radius: 8px;
+      text-align: center;
+      font-weight: 600;
+      margin-top: 12px;
+    }
+
+    .call-status.idle {
+      background: #f3f4f6;
+      color: #6b7280;
+    }
+
+    .call-status.connecting {
+      background: #fef3c7;
+      color: #92400e;
+    }
+
+    .call-status.active {
+      background: #d1fae5;
+      color: #065f46;
+      animation: pulse 2s infinite;
+    }
   </style>
 </head>
 <body>
@@ -302,6 +386,31 @@
         Real-time Call Monitoring & Transcription
       </p>
     </header>
+
+    <!-- Call Control Panel -->
+    <div class="call-control-panel">
+      <h2 style="margin: 0 0 16px 0; color: #1f2937;">
+        🎙️ Make a Call
+      </h2>
+      <div class="call-input-group">
+        <input
+          type="tel"
+          id="phoneInput"
+          class="call-input"
+          placeholder="Enter phone number (e.g., +1234567890)"
+          pattern="[\+]?[0-9]{10,15}"
+        />
+        <button id="callButton" class="call-button start" onclick="startCall()">
+          📞 Call
+        </button>
+        <button id="hangupButton" class="call-button end" onclick="hangupCall()" style="display: none;">
+          ❌ Hang Up
+        </button>
+      </div>
+      <div id="callStatus" class="call-status idle">
+        Ready to call
+      </div>
+    </div>
 
     <div class="stats">
       <div class="stat-card">
@@ -348,8 +457,13 @@
   </div>
 
   <script src="/socket.io/socket.io.js"></script>
+  <script src="/twilio-voice.min.js"></script>
   <script>
     const socket = io();
+
+    // Twilio Device for browser calling
+    let twilioDevice = null;
+    let currentCall = null;
 
     const callsContainer = document.getElementById('callsContainer');
     const transcriptionsContainer = document.getElementById('transcriptionsContainer');
@@ -418,28 +532,102 @@
       `).join('');
     }
 
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
     function renderTranscriptions() {
       let html = '';
+      const shouldScroll = isScrolledToBottom(transcriptionsContainer);
 
-      // Show live transcriptions first
+      // Show live transcriptions first (chat conversation format)
       if (liveTranscripts.size > 0) {
         liveTranscripts.forEach((liveData, callSid) => {
           html += `
-            <div class="transcription-item" style="border-left-color: #f59e0b; background: #fffbeb;">
-              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <div class="transcription-item" style="border-left-color: #f59e0b; background: #fffbeb; padding: 16px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
                 <div class="call-sid">${callSid}</div>
-                <span style="color: #f59e0b; font-weight: 600; font-size: 0.85rem;">🔴 LIVE</span>
+                <span style="color: #f59e0b; font-weight: 600; font-size: 0.85rem;">🔴 LIVE CONVERSATION</span>
               </div>
-              <div class="transcription-text" style="background: white;">
-                ${liveData.fullTranscript || '<span style="color: #9ca3af;">Listening...</span>'}
+
+              <!-- Chat Messages -->
+              <div style="display: flex; flex-direction: column; gap: 8px;">
+          `;
+
+          // Render each message as a separate chat bubble
+          if (liveData.messages.length === 0) {
+            html += `
+              <div style="text-align: center; color: #9ca3af; padding: 20px;">
+                Waiting for conversation to start...
               </div>
-              ${liveData.interim ? `
-                <div style="color: #9ca3af; font-size: 0.85rem; font-style: italic; margin-top: 8px;">
-                  ${liveData.interim}
+            `;
+          } else {
+            liveData.messages.forEach((msg) => {
+              const isInbound = msg.track === 'inbound';
+              const bgColor = isInbound ? '#fee2e2' : '#dbeafe';
+              const borderColor = isInbound ? '#dc2626' : '#2563eb';
+              const textColor = isInbound ? '#dc2626' : '#2563eb';
+              const icon = isInbound ? '👤' : '🗣️';
+
+              html += `
+                <div style="display: flex; align-items: flex-start; gap: 8px;">
+                  <div style="font-size: 1.2rem; margin-top: 4px;">${icon}</div>
+                  <div style="flex: 1;">
+                    <div style="font-weight: 600; color: ${textColor}; font-size: 0.85rem; margin-bottom: 4px;">
+                      ${msg.speaker}
+                    </div>
+                    <div style="background: ${bgColor}; border-left: 3px solid ${borderColor}; padding: 10px 14px; border-radius: 8px; white-space: pre-wrap; word-wrap: break-word; direction: rtl;">
+                      ${escapeHtml(msg.text)}
+                    </div>
+                  </div>
                 </div>
-              ` : ''}
-              <div class="transcription-meta">
+              `;
+            });
+          }
+
+          // Show interim results if any
+          const inboundInterim = liveData.currentInterim.inbound;
+          const outboundInterim = liveData.currentInterim.outbound;
+
+          if (inboundInterim) {
+            html += `
+              <div style="display: flex; align-items: flex-start; gap: 8px; opacity: 0.6;">
+                <div style="font-size: 1.2rem; margin-top: 4px;">👤</div>
+                <div style="flex: 1;">
+                  <div style="font-weight: 600; color: #dc2626; font-size: 0.85rem; margin-bottom: 4px;">
+                    Them
+                  </div>
+                  <div style="background: #fee2e2; border-left: 3px solid #dc2626; padding: 10px 14px; border-radius: 8px; font-style: italic; white-space: pre-wrap; word-wrap: break-word; direction: rtl;">
+                    ${escapeHtml(inboundInterim)}...
+                  </div>
+                </div>
+              </div>
+            `;
+          }
+
+          if (outboundInterim) {
+            html += `
+              <div style="display: flex; align-items: flex-start; gap: 8px; opacity: 0.6;">
+                <div style="font-size: 1.2rem; margin-top: 4px;">🗣️</div>
+                <div style="flex: 1;">
+                  <div style="font-weight: 600; color: #2563eb; font-size: 0.85rem; margin-bottom: 4px;">
+                    You
+                  </div>
+                  <div style="background: #dbeafe; border-left: 3px solid #2563eb; padding: 10px 14px; border-radius: 8px; font-style: italic; white-space: pre-wrap; word-wrap: break-word; direction: rtl;">
+                    ${escapeHtml(outboundInterim)}...
+                  </div>
+                </div>
+              </div>
+            `;
+          }
+
+          html += `
+              </div>
+              <div class="transcription-meta" style="margin-top: 12px;">
                 <span>${formatTime(liveData.timestamp)}</span>
+                <span style="color: #9ca3af;">${liveData.messages.length} messages</span>
               </div>
             </div>
           `;
@@ -451,28 +639,253 @@
         transcriptionsContainer.innerHTML = `
           <div class="empty-state">
             <div class="empty-state-icon">🎙️</div>
-            <p>No transcriptions yet. Transcriptions appear here during calls.</p>
+            <p>No transcriptions yet. Start a call to see conversation transcripts!</p>
           </div>
         `;
         return;
       }
 
-      html += transcriptions.map(trans => `
-        <div class="transcription-item">
-          <div class="call-sid">${trans.callSid}</div>
-          <div class="transcription-text ${trans.text === '(No speech detected)' ? 'no-speech' : ''}">
-            "${trans.text}"
-          </div>
-          <div class="transcription-meta">
-            <span>${formatTime(trans.timestamp)}</span>
-            ${trans.isRealTime ? '<span style="color: #10b981;">✓ Real-time</span>' : ''}
-            ${trans.recordingUrl ? `<a href="${trans.recordingUrl}" target="_blank" class="recording-link">🔊 Play Recording</a>` : ''}
-          </div>
-        </div>
-      `).join('');
+      html += transcriptions.map(trans => {
+        if (trans.isDualChannel) {
+          // Dual-channel chat conversation format (completed call)
+          const inboundMessages = trans.inbound.split(/[.!?]\s+/).filter(s => s.trim() && s !== '(No speech detected)');
+          const outboundMessages = trans.outbound.split(/[.!?]\s+/).filter(s => s.trim() && s !== '(No speech detected)');
+
+          let chatHtml = `
+            <div class="transcription-item" style="padding: 16px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                <div class="call-sid">${trans.callSid}</div>
+                ${trans.isRealTime ? '<span style="color: #10b981; font-size: 0.85rem;">✓ Real-time</span>' : ''}
+              </div>
+
+              <div style="display: flex; flex-direction: column; gap: 8px;">
+          `;
+
+          // Show full conversation summary
+          if (inboundMessages.length > 0) {
+            chatHtml += `
+              <div style="display: flex; align-items: flex-start; gap: 8px;">
+                <div style="font-size: 1.2rem; margin-top: 4px;">👤</div>
+                <div style="flex: 1;">
+                  <div style="font-weight: 600; color: #dc2626; font-size: 0.85rem; margin-bottom: 4px;">
+                    Them
+                  </div>
+                  <div style="background: #fee2e2; border-left: 3px solid #dc2626; padding: 10px 14px; border-radius: 8px; white-space: pre-wrap; word-wrap: break-word; direction: rtl;">
+                    ${escapeHtml(trans.inbound)}
+                  </div>
+                </div>
+              </div>
+            `;
+          }
+
+          if (outboundMessages.length > 0) {
+            chatHtml += `
+              <div style="display: flex; align-items: flex-start; gap: 8px;">
+                <div style="font-size: 1.2rem; margin-top: 4px;">🗣️</div>
+                <div style="flex: 1;">
+                  <div style="font-weight: 600; color: #2563eb; font-size: 0.85rem; margin-bottom: 4px;">
+                    You
+                  </div>
+                  <div style="background: #dbeafe; border-left: 3px solid #2563eb; padding: 10px 14px; border-radius: 8px; white-space: pre-wrap; word-wrap: break-word; direction: rtl;">
+                    ${escapeHtml(trans.outbound)}
+                  </div>
+                </div>
+              </div>
+            `;
+          }
+
+          if (inboundMessages.length === 0 && outboundMessages.length === 0) {
+            chatHtml += `
+              <div style="text-align: center; color: #9ca3af; padding: 20px;">
+                No speech detected in this call
+              </div>
+            `;
+          }
+
+          chatHtml += `
+              </div>
+              <div class="transcription-meta" style="margin-top: 12px;">
+                <span>${formatTime(trans.timestamp)}</span>
+              </div>
+            </div>
+          `;
+          return chatHtml;
+        } else {
+          // Single channel format (legacy)
+          return `
+            <div class="transcription-item">
+              <div class="call-sid">${trans.callSid}</div>
+              <div class="transcription-text ${trans.text === '(No speech detected)' ? 'no-speech' : ''}" style="white-space: pre-wrap; word-wrap: break-word; direction: rtl;">
+                "${escapeHtml(trans.text)}"
+              </div>
+              <div class="transcription-meta">
+                <span>${formatTime(trans.timestamp)}</span>
+                ${trans.isRealTime ? '<span style="color: #10b981;">✓ Real-time</span>' : ''}
+                ${trans.recordingUrl ? `<a href="${trans.recordingUrl}" target="_blank" class="recording-link">🔊 Play Recording</a>` : ''}
+              </div>
+            </div>
+          `;
+        }
+      }).join('');
 
       transcriptionsContainer.innerHTML = html;
+
+      // Auto-scroll to bottom if user was already at bottom
+      if (shouldScroll) {
+        scrollToBottom(transcriptionsContainer);
+      }
     }
+
+    function isScrolledToBottom(element) {
+      const threshold = 50; // pixels from bottom
+      return element.scrollHeight - element.scrollTop - element.clientHeight < threshold;
+    }
+
+    function scrollToBottom(element) {
+      element.scrollTop = element.scrollHeight;
+    }
+
+    // Initialize Twilio Device (Voice SDK 2.x)
+    async function initializeTwilioDevice() {
+      try {
+        const response = await fetch('/token');
+        const data = await response.json();
+
+        twilioDevice = new Twilio.Device(data.token, {
+          codecPreferences: ['opus', 'pcmu'],
+          fakeLocalDTMF: true,
+          enableRingingState: true
+        });
+
+        twilioDevice.on('registered', () => {
+          console.log('Twilio Device ready');
+          updateCallStatus('Ready to call', 'idle');
+        });
+
+        twilioDevice.on('error', (error) => {
+          console.error('Twilio Device error:', error);
+          updateCallStatus('Error: ' + error.message, 'idle');
+        });
+
+        twilioDevice.on('incoming', (call) => {
+          console.log('Incoming call from:', call.parameters.From);
+          currentCall = call;
+        });
+
+        twilioDevice.register();
+
+      } catch (error) {
+        console.error('Failed to initialize Twilio Device:', error);
+        updateCallStatus('Failed to initialize. Check console.', 'idle');
+      }
+    }
+
+    async function startCall() {
+      const phoneNumber = document.getElementById('phoneInput').value.trim();
+
+      if (!phoneNumber) {
+        alert('Please enter a phone number');
+        return;
+      }
+
+      if (!twilioDevice) {
+        alert('Twilio Device not ready. Please refresh the page.');
+        return;
+      }
+
+      updateCallStatus('Connecting...', 'connecting');
+
+      const params = {
+        params: {
+          To: phoneNumber
+        }
+      };
+
+      console.log('Connecting with params:', params);
+
+      try {
+        const call = await twilioDevice.connect(params);
+        currentCall = call;
+
+        console.log('Call object created:', call);
+
+        call.on('accept', () => {
+          console.log('Call connected');
+          updateCallStatus('Call active - Speak into your microphone', 'active');
+          document.getElementById('callButton').style.display = 'none';
+          document.getElementById('hangupButton').style.display = 'inline-block';
+        });
+
+        call.on('disconnect', () => {
+          console.log('Call ended');
+          currentCall = null;
+          updateCallStatus('Call ended', 'idle');
+          document.getElementById('callButton').style.display = 'inline-block';
+          document.getElementById('hangupButton').style.display = 'none';
+          setTimeout(() => {
+            updateCallStatus('Ready to call', 'idle');
+          }, 2000);
+        });
+
+        call.on('cancel', () => {
+          console.log('Call cancelled');
+          currentCall = null;
+          updateCallStatus('Call cancelled', 'idle');
+          document.getElementById('callButton').style.display = 'inline-block';
+          document.getElementById('hangupButton').style.display = 'none';
+        });
+
+        call.on('reject', () => {
+          console.log('Call rejected');
+          currentCall = null;
+          updateCallStatus('Call rejected', 'idle');
+          document.getElementById('callButton').style.display = 'inline-block';
+          document.getElementById('hangupButton').style.display = 'none';
+        });
+
+        call.on('error', (error) => {
+          console.error('Call error:', error);
+          updateCallStatus('Call failed: ' + error.message, 'idle');
+          document.getElementById('callButton').style.display = 'inline-block';
+          document.getElementById('hangupButton').style.display = 'none';
+        });
+
+      } catch (error) {
+        console.error('Failed to connect call:', error);
+        updateCallStatus('Failed to connect: ' + error.message, 'idle');
+      }
+    }
+
+    function hangupCall() {
+      if (currentCall) {
+        currentCall.disconnect();
+      }
+    }
+
+    function updateCallStatus(message, statusClass) {
+      const statusEl = document.getElementById('callStatus');
+      statusEl.textContent = message;
+      statusEl.className = 'call-status ' + statusClass;
+    }
+
+    // Initialize Twilio Device after SDK loads
+    window.addEventListener('load', () => {
+      // Give the script more time to load
+      let attempts = 0;
+      const checkTwilio = setInterval(() => {
+        attempts++;
+        if (typeof Twilio !== 'undefined' && Twilio.Device) {
+          clearInterval(checkTwilio);
+          console.log('Twilio SDK loaded successfully');
+          initializeTwilioDevice();
+        } else if (attempts > 20) {
+          clearInterval(checkTwilio);
+          console.error('Twilio SDK failed to load after 10 seconds');
+          console.error('Check browser console Network tab for script loading errors');
+          updateCallStatus('Failed to load Twilio SDK - Check network', 'idle');
+        }
+      }, 500);
+    });
 
     // Initialize with existing data
     socket.on('init', (data) => {
@@ -498,15 +911,18 @@
       updateStats();
     });
 
-    // Handle live transcription updates
+    // Handle live transcription updates (dual-channel)
     socket.on('liveTranscript', (data) => {
-      const { callSid, transcript, isFinal, fullTranscript, timestamp } = data;
+      const { callSid, track, speaker, transcript, isFinal, fullTranscript, interim, timestamp } = data;
+
+      console.log(`[LiveTranscript] ${speaker} (${track}) - ${isFinal ? 'FINAL' : 'INTERIM'}:`, transcript);
 
       // Update or create live transcript
       if (!liveTranscripts.has(callSid)) {
+        console.log(`[LiveTranscript] Creating new live transcript for call: ${callSid}`);
         liveTranscripts.set(callSid, {
-          fullTranscript: '',
-          interim: '',
+          messages: [], // Array of chat messages
+          currentInterim: { inbound: '', outbound: '' }, // Current interim text
           timestamp
         });
       }
@@ -514,12 +930,32 @@
       const liveData = liveTranscripts.get(callSid);
       liveData.timestamp = timestamp;
 
+      // Update the appropriate track
       if (isFinal) {
-        liveData.fullTranscript = fullTranscript;
-        liveData.interim = '';
+        // Add as a new message in the chat
+        if (transcript && transcript.trim().length > 0) {
+          liveData.messages.push({
+            speaker: speaker,
+            track: track,
+            text: transcript.trim(),
+            timestamp: timestamp,
+            isFinal: true
+          });
+          console.log(`[LiveTranscript] Added new ${speaker} message: "${transcript}"`);
+        }
+        // Clear interim for this track
+        liveData.currentInterim[track] = '';
       } else {
-        liveData.interim = transcript;
+        // Update interim text
+        liveData.currentInterim[track] = interim;
+        console.log(`[LiveTranscript] Updated ${track} interim (${interim.length} chars)`);
       }
+
+      console.log('[LiveTranscript] Current state:', {
+        messageCount: liveData.messages.length,
+        latestMessage: liveData.messages[liveData.messages.length - 1],
+        interim: liveData.currentInterim
+      });
 
       renderTranscriptions();
     });

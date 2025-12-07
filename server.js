@@ -8,6 +8,9 @@ const io = new Server(server);
 const path = require('path');
 const WebSocket = require('ws');
 const speech = require('@google-cloud/speech');
+const twilio = require('twilio');
+const AccessToken = twilio.jwt.AccessToken;
+const VoiceGrant = AccessToken.VoiceGrant;
 
 // Middleware to parse URL-encoded bodies (Twilio sends data this way)
 app.use(express.urlencoded({ extended: false }));
@@ -18,6 +21,13 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 const PORT = process.env.PORT || 3000;
 const LANGUAGE_CODE = process.env.LANGUAGE_CODE || 'ar-SA'; // Default to Arabic (Saudi Arabia)
+const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
+const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
+const TWILIO_PHONE_NUMBER = process.env.TWILIO_PHONE_NUMBER;
+const TWILIO_API_KEY = process.env.TWILIO_API_KEY;
+const TWILIO_API_SECRET = process.env.TWILIO_API_SECRET;
+const TWILIO_TWIML_APP_SID = process.env.TWILIO_TWIML_APP_SID;
+const WEBHOOK_BASE_URL = process.env.WEBHOOK_BASE_URL;
 
 // Store call history and transcriptions in memory
 const callHistory = [];
@@ -51,7 +61,8 @@ wss.on('connection', (ws) => {
 
   let callSid = null;
   let streamSid = null;
-  let recognizeStream = null;
+  let recognizeStreamInbound = null;  // For the person you called
+  let recognizeStreamOutbound = null; // For you (caller)
 
   ws.on('message', async (message) => {
     try {
@@ -62,15 +73,23 @@ wss.on('connection', (ws) => {
           callSid = msg.start.callSid;
           streamSid = msg.start.streamSid;
           console.log(`📞 Stream started - Call SID: ${callSid}`);
+          console.log(`🎯 Dual-channel mode enabled (both speakers)`);
 
-          // Initialize live transcription state
+          // Initialize live transcription state for BOTH speakers
           liveTranscriptions.set(callSid, {
             callSid,
-            fullTranscript: '',
+            inbound: {
+              fullTranscript: '',
+              interim: ''
+            },
+            outbound: {
+              fullTranscript: '',
+              interim: ''
+            },
             lastUpdate: new Date().toISOString()
           });
 
-          // Create Google Cloud Speech streaming recognition
+          // Create Google Cloud Speech config
           // Note: phone_call model only supports English, use default for other languages
           const isEnglish = LANGUAGE_CODE.startsWith('en-');
           const config = {
@@ -91,13 +110,14 @@ wss.on('connection', (ws) => {
             interimResults: true,
           };
 
-          try {
-            recognizeStream = speechClient
+          // Helper function to create a recognition stream for a specific track
+          const createRecognitionStream = (track) => {
+            return speechClient
               .streamingRecognize(request)
               .on('error', (error) => {
-                console.error('❌ Google Speech API error:', error);
+                console.error(`❌ Google Speech API error (${track}):`, error);
                 io.emit('error', {
-                  message: 'Speech recognition error: ' + error.message,
+                  message: `Speech recognition error (${track}): ` + error.message,
                   callSid
                 });
               })
@@ -108,29 +128,40 @@ wss.on('connection', (ws) => {
                   const isFinal = result.isFinal;
 
                   if (transcript && transcript.trim().length > 0) {
-                    console.log(`🎙️ ${isFinal ? '[FINAL]' : '[INTERIM]'} ${transcript}`);
+                    const speaker = track === 'inbound' ? 'Them' : 'You';
+                    console.log(`🎙️ [${speaker}] ${isFinal ? 'FINAL' : 'INTERIM'}: ${transcript}`);
 
                     const liveState = liveTranscriptions.get(callSid);
                     if (liveState) {
                       if (isFinal) {
-                        liveState.fullTranscript += transcript + ' ';
+                        liveState[track].fullTranscript += transcript + ' ';
+                        liveState[track].interim = '';
+                      } else {
+                        liveState[track].interim = transcript;
                       }
                       liveState.lastUpdate = new Date().toISOString();
 
                       // Emit real-time transcription to dashboard
                       io.emit('liveTranscript', {
                         callSid,
+                        track,
+                        speaker,
                         transcript,
                         isFinal,
-                        fullTranscript: liveState.fullTranscript,
+                        fullTranscript: liveState[track].fullTranscript,
+                        interim: liveState[track].interim,
                         timestamp: liveState.lastUpdate
                       });
                     }
                   }
                 }
               });
+          };
 
-            console.log('✅ Google Cloud Speech recognition started');
+          try {
+            recognizeStreamInbound = createRecognitionStream('inbound');
+            recognizeStreamOutbound = createRecognitionStream('outbound');
+            console.log('✅ Google Cloud Speech recognition started for BOTH channels');
           } catch (error) {
             console.error('❌ Failed to start Google Cloud Speech:', error);
             io.emit('error', {
@@ -141,11 +172,17 @@ wss.on('connection', (ws) => {
           break;
 
         case 'media':
-          // Forward audio to Google Cloud Speech
-          if (recognizeStream && msg.media?.payload) {
+          // Forward audio to the appropriate Google Cloud Speech stream based on track
+          if (msg.media?.payload) {
             try {
               const audioBuffer = Buffer.from(msg.media.payload, 'base64');
-              recognizeStream.write(audioBuffer);
+              const track = msg.media.track;
+
+              if (track === 'inbound' && recognizeStreamInbound) {
+                recognizeStreamInbound.write(audioBuffer);
+              } else if (track === 'outbound' && recognizeStreamOutbound) {
+                recognizeStreamOutbound.write(audioBuffer);
+              }
             } catch (error) {
               console.error('Error writing to recognition stream:', error);
             }
@@ -155,35 +192,47 @@ wss.on('connection', (ws) => {
         case 'stop':
           console.log(`🛑 Stream stopped - Call SID: ${callSid}`);
 
-          // Save final transcription
+          // Save final transcription for BOTH speakers
           const finalState = liveTranscriptions.get(callSid);
-          if (finalState && finalState.fullTranscript.trim()) {
-            const transcription = {
-              callSid,
-              text: finalState.fullTranscript.trim(),
-              status: 'completed',
-              timestamp: new Date().toISOString(),
-              isRealTime: true
-            };
+          if (finalState) {
+            const inboundText = finalState.inbound.fullTranscript.trim();
+            const outboundText = finalState.outbound.fullTranscript.trim();
 
-            transcriptions.unshift(transcription);
-            if (transcriptions.length > 50) {
-              transcriptions.pop();
+            if (inboundText || outboundText) {
+              const transcription = {
+                callSid,
+                inbound: inboundText || '(No speech detected)',
+                outbound: outboundText || '(No speech detected)',
+                status: 'completed',
+                timestamp: new Date().toISOString(),
+                isRealTime: true,
+                isDualChannel: true
+              };
+
+              transcriptions.unshift(transcription);
+              if (transcriptions.length > 50) {
+                transcriptions.pop();
+              }
+
+              // Emit final transcription
+              io.emit('transcription', transcription);
+
+              console.log('\n========== FINAL TRANSCRIPTION ==========');
+              console.log(`Call SID: ${callSid}`);
+              console.log(`\n--- THEM (Inbound) ---`);
+              console.log(inboundText || '(No speech detected)');
+              console.log(`\n--- YOU (Outbound) ---`);
+              console.log(outboundText || '(No speech detected)');
+              console.log('------------------\n');
             }
-
-            // Emit final transcription
-            io.emit('transcription', transcription);
-
-            console.log('\n========== FINAL TRANSCRIPTION ==========');
-            console.log(`Call SID: ${callSid}`);
-            console.log(`\n--- TRANSCRIPT ---`);
-            console.log(transcription.text);
-            console.log('------------------\n');
           }
 
           // Cleanup
-          if (recognizeStream) {
-            recognizeStream.end();
+          if (recognizeStreamInbound) {
+            recognizeStreamInbound.end();
+          }
+          if (recognizeStreamOutbound) {
+            recognizeStreamOutbound.end();
           }
           liveTranscriptions.delete(callSid);
           break;
@@ -199,13 +248,97 @@ wss.on('connection', (ws) => {
 
   ws.on('close', () => {
     console.log('🔌 Media Stream connection closed');
-    if (recognizeStream) {
-      recognizeStream.end();
+    if (recognizeStreamInbound) {
+      recognizeStreamInbound.end();
+    }
+    if (recognizeStreamOutbound) {
+      recognizeStreamOutbound.end();
     }
     if (callSid) {
       liveTranscriptions.delete(callSid);
     }
   });
+});
+
+// Token endpoint - generates access token for Twilio Client
+app.get('/token', (req, res) => {
+  console.log('\n=== Token Request ===');
+  console.log('Account SID:', TWILIO_ACCOUNT_SID);
+  console.log('API Key:', TWILIO_API_KEY);
+  console.log('API Secret:', TWILIO_API_SECRET ? '***' + TWILIO_API_SECRET.slice(-4) : 'MISSING');
+  console.log('TwiML App SID:', TWILIO_TWIML_APP_SID);
+
+  if (!TWILIO_ACCOUNT_SID || !TWILIO_API_KEY || !TWILIO_API_SECRET || !TWILIO_TWIML_APP_SID) {
+    console.error('ERROR: Missing required credentials!');
+    return res.status(500).json({ error: 'Missing Twilio credentials' });
+  }
+
+  const identity = 'browser_user_' + Date.now();
+
+  try {
+    const token = new AccessToken(
+      TWILIO_ACCOUNT_SID,
+      TWILIO_API_KEY,
+      TWILIO_API_SECRET,
+      { identity: identity }
+    );
+
+    const voiceGrant = new VoiceGrant({
+      outgoingApplicationSid: TWILIO_TWIML_APP_SID,
+      incomingAllow: true,
+    });
+
+    token.addGrant(voiceGrant);
+
+    const jwt = token.toJwt();
+    console.log('Token generated successfully for identity:', identity);
+    console.log('JWT preview:', jwt.substring(0, 50) + '...');
+
+    res.json({
+      identity: identity,
+      token: jwt
+    });
+  } catch (error) {
+    console.error('Error generating token:', error);
+    res.status(500).json({ error: 'Failed to generate token' });
+  }
+});
+
+// Voice endpoint - TwiML for outbound calls with Media Streams
+app.post('/voice', (req, res) => {
+  console.log('\n=== /voice endpoint called ===');
+  console.log('Request body:', req.body);
+
+  // Custom parameters from Voice SDK are prefixed
+  const toNumber = req.body.To || req.query.To;
+
+  console.log('Calling number:', toNumber);
+
+  if (!toNumber) {
+    console.error('ERROR: No phone number provided!');
+    const errorTwiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say>Error: No phone number provided.</Say>
+  <Hangup/>
+</Response>`;
+    res.type('text/xml');
+    return res.send(errorTwiml);
+  }
+
+  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Start>
+    <Stream url="wss://${WEBHOOK_BASE_URL.replace('https://', '').replace('http://', '')}/media-stream" track="both_tracks" />
+  </Start>
+  <Dial callerId="${TWILIO_PHONE_NUMBER}">
+    <Number>${toNumber}</Number>
+  </Dial>
+</Response>`;
+
+  console.log('Sending TwiML:', twiml);
+
+  res.type('text/xml');
+  res.send(twiml);
 });
 
 // Webhook endpoint for call status updates

@@ -36,14 +36,14 @@ client.calls
   .create({
     to: phoneNumber,
     from: twilioPhoneNumber,
-    // TwiML instructions for the call with Media Streams
+    // TwiML instructions for the call with dual-channel Media Streams
     twiml: `<?xml version="1.0" encoding="UTF-8"?>
       <Response>
-        <Say>Hello! This is a test call from Twilio with real-time transcription. Please speak now.</Say>
-        <Connect>
-          <Stream url="wss://${webhookBaseUrl.replace('https://', '').replace('http://', '')}/media-stream" />
-        </Connect>
-        <Say>Thank you for testing. Goodbye!</Say>
+        <Start>
+          <Stream url="wss://${webhookBaseUrl.replace('https://', '').replace('http://', '')}/media-stream" track="both_tracks" />
+        </Start>
+        <Say>This call is being transcribed in real-time. You can start talking now.</Say>
+        <Pause length="300" />
       </Response>`,
     statusCallback: `${webhookBaseUrl}/status`,
     statusCallbackEvent: ['initiated', 'ringing', 'answered', 'completed']
