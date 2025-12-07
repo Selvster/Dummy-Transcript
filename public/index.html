@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Twilio Call Transcription Dashboard</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      padding: 20px;
+    }
+
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+
+    header {
+      text-align: center;
+      color: white;
+      margin-bottom: 30px;
+    }
+
+    h1 {
+      font-size: 2.5rem;
+      margin-bottom: 10px;
+      text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+    }
+
+    .subtitle {
+      font-size: 1.1rem;
+      opacity: 0.9;
+    }
+
+    .status-indicator {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #4ade80;
+      margin-right: 8px;
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    .dashboard {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+      margin-bottom: 20px;
+    }
+
+    @media (max-width: 968px) {
+      .dashboard {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .panel {
+      background: white;
+      border-radius: 12px;
+      padding: 24px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+    }
+
+    .panel h2 {
+      font-size: 1.5rem;
+      margin-bottom: 20px;
+      color: #1f2937;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .panel-icon {
+      font-size: 1.8rem;
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 40px 20px;
+      color: #6b7280;
+    }
+
+    .empty-state-icon {
+      font-size: 4rem;
+      margin-bottom: 16px;
+      opacity: 0.3;
+    }
+
+    .call-item {
+      background: #f9fafb;
+      border-left: 4px solid #667eea;
+      padding: 16px;
+      margin-bottom: 12px;
+      border-radius: 8px;
+      transition: all 0.3s ease;
+      animation: slideIn 0.3s ease;
+    }
+
+    @keyframes slideIn {
+      from {
+        opacity: 0;
+        transform: translateY(-10px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .call-item:hover {
+      box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+      transform: translateX(4px);
+    }
+
+    .call-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+
+    .call-sid {
+      font-family: 'Courier New', monospace;
+      font-size: 0.85rem;
+      color: #6b7280;
+    }
+
+    .status-badge {
+      padding: 4px 12px;
+      border-radius: 12px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+
+    .status-initiated { background: #dbeafe; color: #1e40af; }
+    .status-ringing { background: #fef3c7; color: #92400e; }
+    .status-in-progress { background: #fef3c7; color: #92400e; }
+    .status-answered { background: #d1fae5; color: #065f46; }
+    .status-completed { background: #d1fae5; color: #065f46; }
+    .status-busy { background: #fee2e2; color: #991b1b; }
+    .status-failed { background: #fee2e2; color: #991b1b; }
+    .status-no-answer { background: #f3f4f6; color: #374151; }
+
+    .call-details {
+      font-size: 0.95rem;
+      color: #374151;
+      line-height: 1.6;
+    }
+
+    .call-details strong {
+      color: #1f2937;
+    }
+
+    .time {
+      font-size: 0.85rem;
+      color: #9ca3af;
+      margin-top: 8px;
+    }
+
+    .transcription-item {
+      background: #f0fdf4;
+      border-left: 4px solid #10b981;
+      padding: 16px;
+      margin-bottom: 12px;
+      border-radius: 8px;
+      animation: slideIn 0.3s ease;
+    }
+
+    .transcription-text {
+      font-size: 1rem;
+      color: #1f2937;
+      line-height: 1.6;
+      margin: 12px 0;
+      padding: 12px;
+      background: white;
+      border-radius: 6px;
+      font-style: italic;
+    }
+
+    .transcription-meta {
+      display: flex;
+      gap: 16px;
+      font-size: 0.85rem;
+      color: #6b7280;
+      flex-wrap: wrap;
+    }
+
+    .recording-link {
+      color: #667eea;
+      text-decoration: none;
+      font-weight: 500;
+    }
+
+    .recording-link:hover {
+      text-decoration: underline;
+    }
+
+    .no-speech {
+      color: #9ca3af;
+      font-style: italic;
+    }
+
+    .scroll-container {
+      max-height: 600px;
+      overflow-y: auto;
+      padding-right: 8px;
+    }
+
+    .scroll-container::-webkit-scrollbar {
+      width: 8px;
+    }
+
+    .scroll-container::-webkit-scrollbar-track {
+      background: #f1f1f1;
+      border-radius: 4px;
+    }
+
+    .scroll-container::-webkit-scrollbar-thumb {
+      background: #667eea;
+      border-radius: 4px;
+    }
+
+    .scroll-container::-webkit-scrollbar-thumb:hover {
+      background: #5568d3;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 16px;
+      margin-bottom: 20px;
+    }
+
+    .stat-card {
+      background: white;
+      padding: 20px;
+      border-radius: 12px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+      text-align: center;
+    }
+
+    .stat-value {
+      font-size: 2.5rem;
+      font-weight: bold;
+      color: #667eea;
+      margin-bottom: 8px;
+    }
+
+    .stat-label {
+      font-size: 0.9rem;
+      color: #6b7280;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .notification {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      background: #10b981;
+      color: white;
+      padding: 16px 24px;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+      animation: slideInRight 0.3s ease;
+      z-index: 1000;
+    }
+
+    @keyframes slideInRight {
+      from {
+        opacity: 0;
+        transform: translateX(100px);
+      }
+      to {
+        opacity: 1;
+        transform: translateX(0);
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>📞 Twilio Call Dashboard</h1>
+      <p class="subtitle">
+        <span class="status-indicator"></span>
+        Real-time Call Monitoring & Transcription
+      </p>
+    </header>
+
+    <div class="stats">
+      <div class="stat-card">
+        <div class="stat-value" id="totalCalls">0</div>
+        <div class="stat-label">Total Calls</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" id="totalTranscriptions">0</div>
+        <div class="stat-label">Transcriptions</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" id="activeCalls">0</div>
+        <div class="stat-label">Active Calls</div>
+      </div>
+    </div>
+
+    <div class="dashboard">
+      <div class="panel">
+        <h2>
+          <span class="panel-icon">📞</span>
+          Recent Calls
+        </h2>
+        <div class="scroll-container" id="callsContainer">
+          <div class="empty-state">
+            <div class="empty-state-icon">📱</div>
+            <p>No calls yet. Start a call to see it here!</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>
+          <span class="panel-icon">📝</span>
+          Transcriptions
+        </h2>
+        <div class="scroll-container" id="transcriptionsContainer">
+          <div class="empty-state">
+            <div class="empty-state-icon">🎙️</div>
+            <p>No transcriptions yet. Transcriptions appear here after calls are recorded.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+
+    const callsContainer = document.getElementById('callsContainer');
+    const transcriptionsContainer = document.getElementById('transcriptionsContainer');
+    const totalCallsEl = document.getElementById('totalCalls');
+    const totalTranscriptionsEl = document.getElementById('totalTranscriptions');
+    const activeCallsEl = document.getElementById('activeCalls');
+
+    let calls = [];
+    let transcriptions = [];
+    let liveTranscripts = new Map(); // Store live transcripts by callSid
+
+    function formatTime(timestamp) {
+      const date = new Date(timestamp);
+      return date.toLocaleString();
+    }
+
+    function getStatusClass(status) {
+      return `status-${status.toLowerCase().replace(/[_-]/g, '-')}`;
+    }
+
+    function showNotification(message, duration = 3000) {
+      const notification = document.createElement('div');
+      notification.className = 'notification';
+      notification.textContent = message;
+      document.body.appendChild(notification);
+
+      setTimeout(() => {
+        notification.style.animation = 'slideInRight 0.3s ease reverse';
+        setTimeout(() => notification.remove(), 300);
+      }, duration);
+    }
+
+    function updateStats() {
+      totalCallsEl.textContent = calls.length;
+      totalTranscriptionsEl.textContent = transcriptions.length;
+      const active = calls.filter(c =>
+        c.status === 'in-progress' || c.status === 'ringing' || c.status === 'initiated'
+      ).length;
+      activeCallsEl.textContent = active;
+    }
+
+    function renderCalls() {
+      if (calls.length === 0) {
+        callsContainer.innerHTML = `
+          <div class="empty-state">
+            <div class="empty-state-icon">📱</div>
+            <p>No calls yet. Start a call to see it here!</p>
+          </div>
+        `;
+        return;
+      }
+
+      callsContainer.innerHTML = calls.map(call => `
+        <div class="call-item">
+          <div class="call-header">
+            <span class="call-sid">${call.callSid}</span>
+            <span class="status-badge ${getStatusClass(call.status)}">${call.status}</span>
+          </div>
+          <div class="call-details">
+            <div><strong>From:</strong> ${call.from || 'N/A'}</div>
+            <div><strong>To:</strong> ${call.to || 'N/A'}</div>
+            ${call.duration ? `<div><strong>Duration:</strong> ${call.duration}s</div>` : ''}
+          </div>
+          <div class="time">${formatTime(call.timestamp)}</div>
+        </div>
+      `).join('');
+    }
+
+    function renderTranscriptions() {
+      let html = '';
+
+      // Show live transcriptions first
+      if (liveTranscripts.size > 0) {
+        liveTranscripts.forEach((liveData, callSid) => {
+          html += `
+            <div class="transcription-item" style="border-left-color: #f59e0b; background: #fffbeb;">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                <div class="call-sid">${callSid}</div>
+                <span style="color: #f59e0b; font-weight: 600; font-size: 0.85rem;">🔴 LIVE</span>
+              </div>
+              <div class="transcription-text" style="background: white;">
+                ${liveData.fullTranscript || '<span style="color: #9ca3af;">Listening...</span>'}
+              </div>
+              ${liveData.interim ? `
+                <div style="color: #9ca3af; font-size: 0.85rem; font-style: italic; margin-top: 8px;">
+                  ${liveData.interim}
+                </div>
+              ` : ''}
+              <div class="transcription-meta">
+                <span>${formatTime(liveData.timestamp)}</span>
+              </div>
+            </div>
+          `;
+        });
+      }
+
+      // Show completed transcriptions
+      if (transcriptions.length === 0 && liveTranscripts.size === 0) {
+        transcriptionsContainer.innerHTML = `
+          <div class="empty-state">
+            <div class="empty-state-icon">🎙️</div>
+            <p>No transcriptions yet. Transcriptions appear here during calls.</p>
+          </div>
+        `;
+        return;
+      }
+
+      html += transcriptions.map(trans => `
+        <div class="transcription-item">
+          <div class="call-sid">${trans.callSid}</div>
+          <div class="transcription-text ${trans.text === '(No speech detected)' ? 'no-speech' : ''}">
+            "${trans.text}"
+          </div>
+          <div class="transcription-meta">
+            <span>${formatTime(trans.timestamp)}</span>
+            ${trans.isRealTime ? '<span style="color: #10b981;">✓ Real-time</span>' : ''}
+            ${trans.recordingUrl ? `<a href="${trans.recordingUrl}" target="_blank" class="recording-link">🔊 Play Recording</a>` : ''}
+          </div>
+        </div>
+      `).join('');
+
+      transcriptionsContainer.innerHTML = html;
+    }
+
+    // Initialize with existing data
+    socket.on('init', (data) => {
+      calls = data.calls || [];
+      transcriptions = data.transcriptions || [];
+      renderCalls();
+      renderTranscriptions();
+      updateStats();
+    });
+
+    // Handle new call status updates
+    socket.on('callStatus', (statusUpdate) => {
+      const existingIndex = calls.findIndex(c => c.callSid === statusUpdate.callSid);
+
+      if (existingIndex !== -1) {
+        calls[existingIndex] = { ...calls[existingIndex], ...statusUpdate };
+      } else {
+        calls.unshift(statusUpdate);
+        showNotification(`New call ${statusUpdate.status}: ${statusUpdate.to}`);
+      }
+
+      renderCalls();
+      updateStats();
+    });
+
+    // Handle live transcription updates
+    socket.on('liveTranscript', (data) => {
+      const { callSid, transcript, isFinal, fullTranscript, timestamp } = data;
+
+      // Update or create live transcript
+      if (!liveTranscripts.has(callSid)) {
+        liveTranscripts.set(callSid, {
+          fullTranscript: '',
+          interim: '',
+          timestamp
+        });
+      }
+
+      const liveData = liveTranscripts.get(callSid);
+      liveData.timestamp = timestamp;
+
+      if (isFinal) {
+        liveData.fullTranscript = fullTranscript;
+        liveData.interim = '';
+      } else {
+        liveData.interim = transcript;
+      }
+
+      renderTranscriptions();
+    });
+
+    // Handle new transcriptions
+    socket.on('transcription', (transcription) => {
+      transcriptions.unshift(transcription);
+
+      // Remove from live transcripts if it exists
+      if (liveTranscripts.has(transcription.callSid)) {
+        liveTranscripts.delete(transcription.callSid);
+      }
+
+      renderTranscriptions();
+      updateStats();
+      showNotification('Transcription completed!');
+    });
+
+    // Handle errors
+    socket.on('error', (error) => {
+      console.error('Error:', error);
+      showNotification(`Error: ${error.message}`, 5000);
+    });
+
+    socket.on('connect', () => {
+      console.log('Connected to server');
+    });
+
+    socket.on('disconnect', () => {
+      console.log('Disconnected from server');
+    });
+  </script>
+</body>
+</html>
